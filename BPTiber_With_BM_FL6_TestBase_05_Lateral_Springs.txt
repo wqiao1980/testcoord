@@ -114789,4 +114789,4 @@
 *****add	set	of	lateral	springs
 **				
 *ELSET,	ELSET=elset_latSprings,	GENERATE		
-600002,	616399,	1
+ 600002,	616399,	1
