@@ -7,12 +7,22 @@ Private Const TARGET_SHEET As String = "ARENA_MOD_PLWithDBM2-10"
 Private Const SPRING_SHEET As String = "Spring2-10"
 Private Const SPRING_DISTANCE_SHEET As String = "SpringDistance2-10"
 Private Const SHEET10_SHEET As String = "Sheet10"
+Private Const ASLAID_SHEET As String = "AsLaid10DBM2"
+Private Const MODSTRUCTURE_SHEET As String = "ModStructure"
 Private Const CURVE_FIRST_ROW As Long = 73
 Private Const OUTPUT_FIRST_COL As Long = 26  ' Z
 Private Const DEFAULT_OUTPUT_FIRST_ROW As Long = 10
 Private Const SPRING_OUTPUT_FIRST_ROW As Long = 5
 Private Const SPRING_DISTANCE_FIRST_ROW As Long = 9
 Private Const SHEET10_FIRST_ROW As Long = 9
+Private Const ASLAID_NODE_FIRST_ROW As Long = 28
+Private Const ASLAID_AUX_FIRST_ROW As Long = 21
+Private Const ASLAID_CURVE_FIRST_ROW As Long = 13
+Private Const ASLAID_SHEET10_SOURCE_FIRST_ROW As Long = 23
+Private Const MODSTRUCTURE_ROUTE_LAST_ROW As Long = 72
+Private Const MODSTRUCTURE_NODE_INCREMENT As Long = 7000000
+Private Const MODSTRUCTURE_UPSTREAM_INCREMENT As Long = 8000000
+Private Const MODSTRUCTURE_DOWNSTREAM_INCREMENT As Long = 9000000
 Private Const SPRING_TEXT_FILE_NAME As String = _
     "BPTiber_With_BM_FL6_TestBase_05_Lateral_Springs.txt"
 Private Const INITIAL_DISPLACEMENT_TEXT_FILE_NAME As String = _
@@ -24,6 +34,8 @@ Private Const WORKFLOW_COORDINATES_ONLY As Long = 1
 Private Const WORKFLOW_SPRING2 As Long = 2
 Private Const WORKFLOW_SPRING_DISTANCE As Long = 3
 Private Const WORKFLOW_SHEET10 As Long = 4
+Private Const WORKFLOW_ASLAID As Long = 5
+Private Const WORKFLOW_ASLAID_TENSION As Long = 6
 Private Const PI_VALUE As Double = 3.14159265358979
 
 Public Sub RunAllWorkflows()
@@ -48,6 +60,24 @@ End Sub
 
 Public Sub RunSheet10Workflow()
     UpdateGeneratedCoordinatesCore True, WORKFLOW_SHEET10
+End Sub
+
+Public Sub RunAsLaidWorkflow()
+    UpdateGeneratedCoordinatesCore True, WORKFLOW_ASLAID
+End Sub
+
+Public Sub RunAsLaidTensionWorkflow()
+    UpdateGeneratedCoordinatesCore True, WORKFLOW_ASLAID_TENSION
+End Sub
+
+Public Sub RunModStructureWorkflow( _
+           Optional ByVal ShowCompletionMessage As Boolean = True)
+    RunModStructureWorkflowCore ShowCompletionMessage, False
+End Sub
+
+Public Sub RunIntermediateStructureWorkflow( _
+           Optional ByVal ShowCompletionMessage As Boolean = True)
+    RunModStructureWorkflowCore ShowCompletionMessage, True
 End Sub
 
 Public Sub UpdateGeneratedCoordinatesCore( _
@@ -79,7 +109,8 @@ Public Sub UpdateGeneratedCoordinatesCore( _
 
     On Error GoTo CleanFail
 
-    If WorkflowMode < WORKFLOW_ALL Or WorkflowMode > WORKFLOW_SHEET10 Then
+    If WorkflowMode < WORKFLOW_ALL Or _
+       WorkflowMode > WORKFLOW_ASLAID_TENSION Then
         Err.Raise vbObjectError + 2030, , "Unknown workflow selection."
     End If
 
@@ -117,9 +148,13 @@ Public Sub UpdateGeneratedCoordinatesCore( _
             UpdateSpringSheet ws, outputStartRow, outputLastRow, generatedCount
             UpdateSpringDistanceSheet ws, outputStartRow, outputLastRow, generatedCount
             UpdateSheet10 ws, outputStartRow, outputLastRow, generatedCount
+            UpdateAsLaidSheet ws
+            UpdateSheet10FromAsLaid
+            UpdateModStructureSheet ws, ThisWorkbook.Worksheets(MODSTRUCTURE_SHEET)
             completionText = _
                 "Coordinates, Spring2-10, SpringDistance2-10, Sheet10, " & _
-                "and all three text files were updated."
+                "AsLaid10DBM2, ModStructure endpoints, the AsLaid-to-Sheet10 " & _
+                "workflow, and all three text files were updated."
 
         Case WORKFLOW_COORDINATES_ONLY
             completionText = "Coordinates Z:AC were rebuilt."
@@ -138,6 +173,17 @@ Public Sub UpdateGeneratedCoordinatesCore( _
             UpdateSheet10 ws, outputStartRow, outputLastRow, generatedCount
             completionText = _
                 "Coordinates, Sheet10, and the tension-adjustment text file were updated."
+
+        Case WORKFLOW_ASLAID
+            UpdateAsLaidSheet ws
+            completionText = _
+                "Coordinates and AsLaid10DBM2 were updated."
+
+        Case WORKFLOW_ASLAID_TENSION
+            UpdateSheet10FromAsLaid
+            completionText = _
+                "Coordinates, Sheet10, and the tension-adjustment text " & _
+                "file were updated from AsLaid10DBM2."
     End Select
 
     If ShowCompletionMessage Then
@@ -160,6 +206,407 @@ CleanFail:
            vbExclamation, "Manual workflow"
     Resume CleanExit
 End Sub
+
+Private Sub RunModStructureWorkflowCore( _
+            ByVal ShowCompletionMessage As Boolean, _
+            ByVal BuildIntermediate As Boolean)
+    Dim sourceSheet As Worksheet
+    Dim structureSheet As Worksheet
+    Dim oldEnableEvents As Boolean
+    Dim oldScreenUpdating As Boolean
+    Dim completionText As String
+    Dim failureNumber As Long
+    Dim failureDescription As String
+    Dim failureSource As String
+
+    If MeshCoordinateUpdateIsRunning Then Exit Sub
+    MeshCoordinateUpdateIsRunning = True
+
+    oldEnableEvents = Application.EnableEvents
+    oldScreenUpdating = Application.ScreenUpdating
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+
+    On Error GoTo CleanFail
+
+    Set sourceSheet = ThisWorkbook.Worksheets(TARGET_SHEET)
+    Set structureSheet = ThisWorkbook.Worksheets(MODSTRUCTURE_SHEET)
+
+    UpdateModStructureSheet sourceSheet, structureSheet
+    If BuildIntermediate Then
+        BuildIntermediateStructure sourceSheet, structureSheet
+        completionText = _
+            "ModStructure endpoints and the two intermediate structure " & _
+            "extension nodes were updated."
+    Else
+        completionText = _
+            "ModStructure route data and the two endpoint extension nodes " & _
+            "were updated."
+    End If
+
+    If ShowCompletionMessage Then
+        MsgBox completionText, vbInformation, "ModStructure workflow completed"
+    End If
+
+CleanExit:
+    Application.EnableEvents = oldEnableEvents
+    Application.ScreenUpdating = oldScreenUpdating
+    MeshCoordinateUpdateIsRunning = False
+    Exit Sub
+
+CleanFail:
+    failureNumber = Err.Number
+    failureDescription = Err.Description
+    failureSource = Err.Source
+    Application.EnableEvents = oldEnableEvents
+    Application.ScreenUpdating = oldScreenUpdating
+    MeshCoordinateUpdateIsRunning = False
+    If ShowCompletionMessage Then
+        MsgBox "The ModStructure workflow was not completed: " & _
+               failureDescription, vbExclamation, "ModStructure workflow"
+    Else
+        Err.Raise failureNumber, failureSource, failureDescription
+    End If
+End Sub
+
+Private Sub UpdateModStructureSheet( _
+            ByVal sourceSheet As Worksheet, _
+            ByVal structureSheet As Worksheet)
+    Dim routeValues() As Variant
+    Dim routeCount As Long
+    Dim sourceRow As Long
+    Dim previousLastRow As Long
+    Dim lastRouteRow As Long
+    Dim endLabel As String
+    Dim endTopZ As Variant
+    Dim endBottomZ As Variant
+    Dim clearLastRow As Long
+    Dim startLength As Double
+    Dim endLength As Double
+
+    ReDim routeValues(1 To MODSTRUCTURE_ROUTE_LAST_ROW, 1 To 3)
+
+    For sourceRow = 1 To MODSTRUCTURE_ROUTE_LAST_ROW
+        If HasNumericValue(sourceSheet.Cells(sourceRow, 1)) Or _
+           HasNumericValue(sourceSheet.Cells(sourceRow, 2)) Or _
+           HasNumericValue(sourceSheet.Cells(sourceRow, 3)) Then
+            If Not HasNumericValue(sourceSheet.Cells(sourceRow, 1)) Or _
+               Not HasNumericValue(sourceSheet.Cells(sourceRow, 2)) Or _
+               Not HasNumericValue(sourceSheet.Cells(sourceRow, 3)) Then
+                Err.Raise vbObjectError + 2032, , _
+                    "ARENA_MOD_PLWithDBM2-10 has an incomplete A:C route row at " & _
+                    CStr(sourceRow) & "."
+            End If
+
+            routeCount = routeCount + 1
+            routeValues(routeCount, 1) = sourceSheet.Cells(sourceRow, 1).Value2
+            routeValues(routeCount, 2) = sourceSheet.Cells(sourceRow, 2).Value2
+            routeValues(routeCount, 3) = sourceSheet.Cells(sourceRow, 3).Value2
+        ElseIf routeCount > 0 Then
+            If sourceRow < MODSTRUCTURE_ROUTE_LAST_ROW Then
+                If Len(sourceSheet.Cells(sourceRow + 1, 1).Value2) = 0 And _
+                   Len(sourceSheet.Cells(sourceRow + 1, 2).Value2) = 0 And _
+                   Len(sourceSheet.Cells(sourceRow + 1, 3).Value2) = 0 Then
+                    Exit For
+                End If
+            End If
+        End If
+    Next sourceRow
+
+    If routeCount < 2 Then
+        Err.Raise vbObjectError + 2033, , _
+            "At least two complete route rows are required in " & _
+            "ARENA_MOD_PLWithDBM2-10 columns A:C."
+    End If
+
+    previousLastRow = FindLastModStructureRouteRow(structureSheet)
+    If previousLastRow < 2 Then previousLastRow = 10
+
+    endLabel = CStr(structureSheet.Cells(previousLastRow, 1).Value2)
+    If Len(Trim$(endLabel)) = 0 Then endLabel = "EndNode"
+    endTopZ = structureSheet.Cells(previousLastRow, 5).Value2
+    endBottomZ = structureSheet.Cells(previousLastRow + 1, 5).Value2
+
+    If IsError(endTopZ) Or Not IsNumeric(endTopZ) Then
+        Err.Raise vbObjectError + 2034, , _
+            "The end structure Z value in ModStructure column E is invalid."
+    End If
+    If IsError(endBottomZ) Or Not IsNumeric(endBottomZ) Then
+        endBottomZ = endTopZ
+    End If
+
+    clearLastRow = Application.WorksheetFunction.Max( _
+        MODSTRUCTURE_ROUTE_LAST_ROW + 1, previousLastRow + 1, routeCount + 1)
+    structureSheet.Range("B1:D" & CStr(clearLastRow)).ClearContents
+    structureSheet.Range("A3:A" & CStr(clearLastRow)).ClearContents
+    structureSheet.Range("E3:E" & CStr(clearLastRow)).ClearContents
+
+    lastRouteRow = routeCount
+    structureSheet.Range("B1").Resize( _
+        MODSTRUCTURE_ROUTE_LAST_ROW, 3).Value2 = routeValues
+    structureSheet.Cells(lastRouteRow, 1).Value2 = endLabel
+    structureSheet.Range("E3").Formula = "=E2-E1"
+    structureSheet.Cells(lastRouteRow, 5).Value2 = CDbl(endTopZ)
+    structureSheet.Cells(lastRouteRow + 1, 5).Value2 = CDbl(endBottomZ)
+
+    startLength = Sqr( _
+        (CDbl(structureSheet.Cells(2, 3).Value2) - _
+         CDbl(structureSheet.Cells(1, 3).Value2)) ^ 2 + _
+        (CDbl(structureSheet.Cells(2, 4).Value2) - _
+         CDbl(structureSheet.Cells(1, 4).Value2)) ^ 2)
+    endLength = Sqr( _
+        (CDbl(structureSheet.Cells(lastRouteRow, 3).Value2) - _
+         CDbl(structureSheet.Cells(lastRouteRow - 1, 3).Value2)) ^ 2 + _
+        (CDbl(structureSheet.Cells(lastRouteRow, 4).Value2) - _
+         CDbl(structureSheet.Cells(lastRouteRow - 1, 4).Value2)) ^ 2)
+    If startLength <= 0.000000001 Or endLength <= 0.000000001 Then
+        Err.Raise vbObjectError + 2035, , _
+            "The first or last ModStructure route segment has zero plan length."
+    End If
+
+    WriteModStructureEndFormulas structureSheet, lastRouteRow
+
+    structureSheet.Range("B1:B" & CStr(lastRouteRow)).NumberFormat = "0"
+    structureSheet.Range("C1:E" & CStr(lastRouteRow + 1)).NumberFormat = "0.000"
+    structureSheet.Range("H2:K5").NumberFormat = "0.000"
+    structureSheet.Range("H2:H5").NumberFormat = "0"
+    structureSheet.Calculate
+End Sub
+
+Private Sub WriteModStructureEndFormulas( _
+            ByVal structureSheet As Worksheet, _
+            ByVal lastRouteRow As Long)
+    Dim previousRow As Long
+    Dim startLengthFormula As String
+    Dim endLengthFormula As String
+
+    previousRow = lastRouteRow - 1
+    startLengthFormula = _
+        "SQRT((C2-C1)^2+(D2-D1)^2)"
+    endLengthFormula = _
+        "SQRT((C" & CStr(lastRouteRow) & "-C" & CStr(previousRow) & ")^2+" & _
+        "(D" & CStr(lastRouteRow) & "-D" & CStr(previousRow) & ")^2)"
+
+    structureSheet.Range("F2").Value2 = "slope"
+    structureSheet.Range("G2").Formula = _
+        "=IF(C2=C1,""vertical"",(D2-D1)/(C2-C1))"
+    structureSheet.Range("F3").Value2 = "angle"
+    structureSheet.Range("G3").Formula = "=ATAN2(C2-C1,D2-D1)"
+    structureSheet.Range("F4").Value2 = "slope"
+    structureSheet.Range("G4").Formula = _
+        "=IF(C" & CStr(lastRouteRow) & "=C" & CStr(previousRow) & _
+        ",""vertical"",(D" & CStr(lastRouteRow) & "-D" & _
+        CStr(previousRow) & ")/(C" & CStr(lastRouteRow) & "-C" & _
+        CStr(previousRow) & "))"
+
+    structureSheet.Range("H2").Formula = _
+        "=B1+" & CStr(MODSTRUCTURE_NODE_INCREMENT)
+    structureSheet.Range("I2").Formula = _
+        "=C1-$G$1*(C2-C1)/" & startLengthFormula
+    structureSheet.Range("J2").Formula = _
+        "=D1-$G$1*(D2-D1)/" & startLengthFormula
+    structureSheet.Range("K2").Formula = "=E1+$N$1"
+    structureSheet.Range("L2").Formula = "=H2&"",""&I2&"",""&J2&"",""&K2"
+
+    structureSheet.Range("H5").Formula = _
+        "=B" & CStr(lastRouteRow) & "+" & CStr(MODSTRUCTURE_NODE_INCREMENT)
+    structureSheet.Range("I5").Formula = _
+        "=C" & CStr(lastRouteRow) & "+$G$1*(C" & CStr(lastRouteRow) & _
+        "-C" & CStr(previousRow) & ")/" & endLengthFormula
+    structureSheet.Range("J5").Formula = _
+        "=D" & CStr(lastRouteRow) & "+$G$1*(D" & CStr(lastRouteRow) & _
+        "-D" & CStr(previousRow) & ")/" & endLengthFormula
+    structureSheet.Range("K5").Formula = _
+        "=E" & CStr(lastRouteRow) & "+$N$1"
+    structureSheet.Range("L5").Formula = "=H5&"",""&I5&"",""&J5&"",""&K5"
+
+    structureSheet.Range("S2").Formula = _
+        "=IF(I2=C1,""vertical"",(J2-D1)/(I2-C1))"
+    structureSheet.Range("S3").Formula = "=G2"
+    structureSheet.Range("S5").Formula = _
+        "=IF(I5=C" & CStr(lastRouteRow) & ",""vertical"",(J5-D" & _
+        CStr(lastRouteRow) & ")/(I5-C" & CStr(lastRouteRow) & "))"
+    structureSheet.Range("T5").Formula = "=G4"
+End Sub
+
+Private Sub BuildIntermediateStructure( _
+            ByVal sourceSheet As Worksheet, _
+            ByVal structureSheet As Worksheet)
+    Dim selectedNode As Long
+    Dim selectedRow As Long
+    Dim routeLastRow As Long
+    Dim matchCount As Long
+    Dim rowNumber As Long
+    Dim upstreamLength As Double
+    Dim downstreamLength As Double
+    Dim selectedZ As Double
+    Dim upstreamIncrement As Long
+    Dim downstreamIncrement As Long
+
+    If IsError(structureSheet.Range("O14").Value2) Or _
+       Not IsNumeric(structureSheet.Range("O14").Value2) Then
+        Err.Raise vbObjectError + 2036, , _
+            "Enter an intermediate route node number in ModStructure cell O14."
+    End If
+    selectedNode = CLng(structureSheet.Range("O14").Value2)
+
+    routeLastRow = FindLastModStructureRouteRow(structureSheet)
+    For rowNumber = 1 To routeLastRow
+        If HasNumericValue(structureSheet.Cells(rowNumber, 2)) Then
+            If CLng(structureSheet.Cells(rowNumber, 2).Value2) = selectedNode Then
+                selectedRow = rowNumber
+                matchCount = matchCount + 1
+            End If
+        End If
+    Next rowNumber
+
+    If matchCount = 0 Then
+        Err.Raise vbObjectError + 2037, , _
+            "Intermediate node " & CStr(selectedNode) & _
+            " was not found in the ModStructure route list."
+    End If
+    If matchCount > 1 Then
+        Err.Raise vbObjectError + 2038, , _
+            "Intermediate node " & CStr(selectedNode) & _
+            " occurs more than once in the ModStructure route list."
+    End If
+    If selectedRow <= 1 Or selectedRow >= routeLastRow Then
+        Err.Raise vbObjectError + 2039, , _
+            "The intermediate node must have a route node before and after it."
+    End If
+
+    upstreamLength = Sqr( _
+        (CDbl(structureSheet.Cells(selectedRow, 3).Value2) - _
+         CDbl(structureSheet.Cells(selectedRow - 1, 3).Value2)) ^ 2 + _
+        (CDbl(structureSheet.Cells(selectedRow, 4).Value2) - _
+         CDbl(structureSheet.Cells(selectedRow - 1, 4).Value2)) ^ 2)
+    downstreamLength = Sqr( _
+        (CDbl(structureSheet.Cells(selectedRow + 1, 3).Value2) - _
+         CDbl(structureSheet.Cells(selectedRow, 3).Value2)) ^ 2 + _
+        (CDbl(structureSheet.Cells(selectedRow + 1, 4).Value2) - _
+         CDbl(structureSheet.Cells(selectedRow, 4).Value2)) ^ 2)
+    If upstreamLength <= 0.000000001 Or downstreamLength <= 0.000000001 Then
+        Err.Raise vbObjectError + 2040, , _
+            "An adjacent intermediate route segment has zero plan length."
+    End If
+
+    If Not IsNumeric(structureSheet.Range("O17").Value2) Then
+        structureSheet.Range("O17").Value2 = MODSTRUCTURE_UPSTREAM_INCREMENT
+    End If
+    If Not IsNumeric(structureSheet.Range("O18").Value2) Then
+        structureSheet.Range("O18").Value2 = MODSTRUCTURE_DOWNSTREAM_INCREMENT
+    End If
+    upstreamIncrement = CLng(structureSheet.Range("O17").Value2)
+    downstreamIncrement = CLng(structureSheet.Range("O18").Value2)
+    If upstreamIncrement = downstreamIncrement Then
+        Err.Raise vbObjectError + 2041, , _
+            "The upstream and downstream node-number additions must differ."
+    End If
+
+    selectedZ = FindRouteZForNode(sourceSheet, selectedNode)
+    structureSheet.Range("O19").Value2 = selectedZ
+
+    WriteIntermediateStructureFormulas structureSheet, selectedRow
+    structureSheet.Range("O21:O22").NumberFormat = "0"
+    structureSheet.Range("P21:R22").NumberFormat = "0.000"
+    structureSheet.Calculate
+End Sub
+
+Private Sub WriteIntermediateStructureFormulas( _
+            ByVal structureSheet As Worksheet, _
+            ByVal selectedRow As Long)
+    Dim previousRow As Long
+    Dim nextRow As Long
+    Dim upstreamLengthFormula As String
+    Dim downstreamLengthFormula As String
+
+    previousRow = selectedRow - 1
+    nextRow = selectedRow + 1
+    upstreamLengthFormula = _
+        "SQRT((C" & CStr(selectedRow) & "-C" & CStr(previousRow) & ")^2+" & _
+        "(D" & CStr(selectedRow) & "-D" & CStr(previousRow) & ")^2)"
+    downstreamLengthFormula = _
+        "SQRT((C" & CStr(nextRow) & "-C" & CStr(selectedRow) & ")^2+" & _
+        "(D" & CStr(nextRow) & "-D" & CStr(selectedRow) & ")^2)"
+
+    structureSheet.Range("O21").Formula = _
+        "=B" & CStr(selectedRow) & "+$O$17"
+    structureSheet.Range("P21").Formula = _
+        "=C" & CStr(selectedRow) & "-$O$15*(C" & CStr(selectedRow) & _
+        "-C" & CStr(previousRow) & ")/" & upstreamLengthFormula
+    structureSheet.Range("Q21").Formula = _
+        "=D" & CStr(selectedRow) & "-$O$15*(D" & CStr(selectedRow) & _
+        "-D" & CStr(previousRow) & ")/" & upstreamLengthFormula
+    structureSheet.Range("R21").Formula = "=$O$19+$O$16"
+    structureSheet.Range("S21").Formula = _
+        "=O21&"",""&P21&"",""&Q21&"",""&R21"
+
+    structureSheet.Range("O22").Formula = _
+        "=B" & CStr(selectedRow) & "+$O$18"
+    structureSheet.Range("P22").Formula = _
+        "=C" & CStr(selectedRow) & "+$O$15*(C" & CStr(nextRow) & _
+        "-C" & CStr(selectedRow) & ")/" & downstreamLengthFormula
+    structureSheet.Range("Q22").Formula = _
+        "=D" & CStr(selectedRow) & "+$O$15*(D" & CStr(nextRow) & _
+        "-D" & CStr(selectedRow) & ")/" & downstreamLengthFormula
+    structureSheet.Range("R22").Formula = "=$O$19+$O$16"
+    structureSheet.Range("S22").Formula = _
+        "=O22&"",""&P22&"",""&Q22&"",""&R22"
+End Sub
+
+Private Function FindRouteZForNode( _
+                 ByVal sourceSheet As Worksheet, _
+                 ByVal nodeNumber As Long) As Double
+    Dim rowNumber As Long
+    Dim lastRow As Long
+
+    lastRow = sourceSheet.Cells(sourceSheet.Rows.Count, OUTPUT_FIRST_COL).End(xlUp).Row
+    For rowNumber = DEFAULT_OUTPUT_FIRST_ROW To lastRow
+        If HasNumericValue(sourceSheet.Cells(rowNumber, OUTPUT_FIRST_COL)) Then
+            If CLng(sourceSheet.Cells(rowNumber, OUTPUT_FIRST_COL).Value2) = nodeNumber Then
+                If HasNumericValue(sourceSheet.Cells(rowNumber, OUTPUT_FIRST_COL + 3)) Then
+                    FindRouteZForNode = _
+                        CDbl(sourceSheet.Cells(rowNumber, OUTPUT_FIRST_COL + 3).Value2)
+                    Exit Function
+                End If
+            End If
+        End If
+    Next rowNumber
+
+    For rowNumber = 1 To MODSTRUCTURE_ROUTE_LAST_ROW
+        If HasNumericValue(sourceSheet.Cells(rowNumber, 7)) Then
+            If CLng(sourceSheet.Cells(rowNumber, 7).Value2) = nodeNumber And _
+               HasNumericValue(sourceSheet.Cells(rowNumber, 10)) Then
+                FindRouteZForNode = CDbl(sourceSheet.Cells(rowNumber, 10).Value2)
+                Exit Function
+            End If
+        End If
+        If HasNumericValue(sourceSheet.Cells(rowNumber, 1)) Then
+            If CLng(sourceSheet.Cells(rowNumber, 1).Value2) = nodeNumber And _
+               HasNumericValue(sourceSheet.Cells(rowNumber, 4)) Then
+                FindRouteZForNode = CDbl(sourceSheet.Cells(rowNumber, 4).Value2)
+                Exit Function
+            End If
+        End If
+    Next rowNumber
+
+    Err.Raise vbObjectError + 2042, , _
+        "No numeric Z coordinate was found for intermediate node " & _
+        CStr(nodeNumber) & ". Rebuild the generated coordinates first."
+End Function
+
+Private Function FindLastModStructureRouteRow( _
+                 ByVal structureSheet As Worksheet) As Long
+    Dim rowNumber As Long
+
+    For rowNumber = 1 To MODSTRUCTURE_ROUTE_LAST_ROW
+        If HasNumericValue(structureSheet.Cells(rowNumber, 2)) And _
+           HasNumericValue(structureSheet.Cells(rowNumber, 3)) And _
+           HasNumericValue(structureSheet.Cells(rowNumber, 4)) Then
+            FindLastModStructureRouteRow = rowNumber
+        End If
+    Next rowNumber
+End Function
 
 Private Sub LoadAnchors(ByVal ws As Worksheet, _
                         ByRef nodes() As Long, _
@@ -882,6 +1329,289 @@ Private Sub UpdateSheet10(ByVal sourceSheet As Worksheet, _
     ExportTensionAdjustmentTextFile outputSheet, sheet10LastRow
 End Sub
 
+Private Sub UpdateSheet10FromAsLaid()
+    Dim sourceSheet As Worksheet
+    Dim outputSheet As Worksheet
+    Dim sourceLastRow As Long
+    Dim nodeCount As Long
+    Dim sheet10LastRow As Long
+    Dim lastColumnARow As Long
+    Dim previousSheet10LastRow As Long
+    Dim clearLastRow As Long
+    Dim seedFormulaOrValue(7 To 15) As Variant
+    Dim seedValues(7 To 15) As Variant
+    Dim seedItem As Variant
+    Dim seedValue As Variant
+    Dim formulaColumn As Long
+
+    Set sourceSheet = ThisWorkbook.Worksheets(ASLAID_SHEET)
+    Set outputSheet = ThisWorkbook.Worksheets(SHEET10_SHEET)
+
+    sourceLastRow = FindLastRowAcrossColumns( _
+        sourceSheet, 2, 5, ASLAID_SHEET10_SOURCE_FIRST_ROW)
+    If sourceLastRow < ASLAID_SHEET10_SOURCE_FIRST_ROW Then
+        Err.Raise vbObjectError + 2036, , _
+            "AsLaid10DBM2 B:E does not contain data from row 23."
+    End If
+
+    nodeCount = sourceLastRow - ASLAID_SHEET10_SOURCE_FIRST_ROW + 1
+    sheet10LastRow = SHEET10_FIRST_ROW + nodeCount - 1
+    If sheet10LastRow > outputSheet.Rows.Count Then
+        Err.Raise vbObjectError + 2037, , _
+            "The AsLaid-to-Sheet10 output does not fit on the worksheet."
+    End If
+
+    ' Preserve each G:O row-10 formula or constant before clearing the prior
+    ' dynamic output. FormulaR1C1 keeps every relative reference aligned.
+    For formulaColumn = 7 To 15
+        seedFormulaOrValue(formulaColumn) = _
+            outputSheet.Cells(10, formulaColumn).FormulaR1C1
+        seedValues(formulaColumn) = _
+            outputSheet.Cells(10, formulaColumn).Value2
+    Next formulaColumn
+
+    previousSheet10LastRow = FindLastRowAcrossColumns( _
+        outputSheet, 3, 15, SHEET10_FIRST_ROW)
+    clearLastRow = previousSheet10LastRow
+    If sheet10LastRow > clearLastRow Then clearLastRow = sheet10LastRow
+
+    If clearLastRow >= SHEET10_FIRST_ROW Then
+        outputSheet.Range("C" & CStr(SHEET10_FIRST_ROW) & _
+                          ":F" & CStr(clearLastRow)).ClearContents
+    End If
+    If clearLastRow >= 10 Then
+        outputSheet.Range("G10:O" & CStr(clearLastRow)).ClearContents
+    End If
+
+    CopyRangeValuesAndFormats _
+        sourceSheet.Range( _
+            sourceSheet.Cells(ASLAID_SHEET10_SOURCE_FIRST_ROW, 2), _
+            sourceSheet.Cells(sourceLastRow, 5)), _
+        outputSheet.Range( _
+            outputSheet.Cells(SHEET10_FIRST_ROW, 3), _
+            outputSheet.Cells(sheet10LastRow, 6))
+
+    If sheet10LastRow >= 10 Then
+        outputSheet.Range("G10:O10").Copy
+        outputSheet.Range("G10:O" & CStr(sheet10LastRow)).PasteSpecial _
+            Paste:=xlPasteFormats
+        Application.CutCopyMode = False
+
+        For formulaColumn = 7 To 15
+            seedItem = seedFormulaOrValue(formulaColumn)
+            If VarType(seedItem) = vbString And _
+               Left$(CStr(seedItem), 1) = "=" Then
+                outputSheet.Range( _
+                    outputSheet.Cells(10, formulaColumn), _
+                    outputSheet.Cells(sheet10LastRow, formulaColumn)).FormulaR1C1 = _
+                        CStr(seedItem)
+            Else
+                seedValue = seedValues(formulaColumn)
+                If Not IsError(seedValue) Then
+                    If Not IsNull(seedValue) Then
+                        If Len(CStr(seedValue)) > 0 Then
+                            outputSheet.Range( _
+                                outputSheet.Cells(10, formulaColumn), _
+                                outputSheet.Cells(sheet10LastRow, formulaColumn)).Value2 = _
+                                    seedValue
+                        End If
+                    End If
+                End If
+            End If
+        Next formulaColumn
+    End If
+
+    lastColumnARow = outputSheet.Cells(outputSheet.Rows.Count, 1).End(xlUp).Row
+    If lastColumnARow < SHEET10_FIRST_ROW Then
+        Err.Raise vbObjectError + 2038, , _
+            "Sheet10 column A does not contain data from row 9."
+    End If
+
+    outputSheet.Cells(lastColumnARow, 1).Calculate
+    outputSheet.Range("H5").Formula = "=A" & CStr(lastColumnARow)
+    outputSheet.Range("H5:I5").Calculate
+    outputSheet.Range("C" & CStr(SHEET10_FIRST_ROW) & _
+                      ":O" & CStr(sheet10LastRow)).Calculate
+    ExportTensionAdjustmentTextFileKeepingFirstTwoLines _
+        outputSheet, sheet10LastRow
+End Sub
+
+Private Sub UpdateAsLaidSheet(ByVal sourceSheet As Worksheet)
+    Dim outputSheet As Worksheet
+    Dim maximumNodeRow As Long
+    Dim nodeLastRow As Long
+    Dim previousNodeLastRow As Long
+    Dim clearNodeLastRow As Long
+    Dim sourceAuxLastRow As Long
+    Dim auxLastRow As Long
+    Dim previousAuxLastRow As Long
+    Dim clearAuxLastRow As Long
+    Dim seedFormulaOrValue(23 To 33) As Variant
+    Dim seedValues(23 To 33) As Variant
+    Dim seedItem As Variant
+    Dim seedValue As Variant
+    Dim formulaColumn As Long
+    Dim rowNumber As Long
+
+    Set outputSheet = ThisWorkbook.Worksheets(ASLAID_SHEET)
+
+    maximumNodeRow = FindMaximumNodeRowInColumnA(sourceSheet)
+    If maximumNodeRow < 1 Then
+        Err.Raise vbObjectError + 2032, , _
+            "ARENA_MOD_PLWithDBM2-10 column A does not contain a node number."
+    End If
+
+    For rowNumber = 1 To maximumNodeRow
+        If Not IsCompleteAnchorRow(sourceSheet, rowNumber, 7) Then
+            Err.Raise vbObjectError + 2033, , _
+                "ARENA_MOD_PLWithDBM2-10 G:J is incomplete at row " & _
+                CStr(rowNumber) & "."
+        End If
+    Next rowNumber
+
+    nodeLastRow = ASLAID_NODE_FIRST_ROW + maximumNodeRow - 1
+    If nodeLastRow > outputSheet.Rows.Count Then
+        Err.Raise vbObjectError + 2034, , _
+            "The AsLaid10DBM2 node output does not fit on the worksheet."
+    End If
+
+    ' Preserve the row-28 seeds before clearing the prior dynamic output.
+    For formulaColumn = 23 To 33  ' W:AG
+        seedFormulaOrValue(formulaColumn) = _
+            outputSheet.Cells(ASLAID_NODE_FIRST_ROW, _
+                              formulaColumn).FormulaR1C1
+        seedValues(formulaColumn) = _
+            outputSheet.Cells(ASLAID_NODE_FIRST_ROW, _
+                              formulaColumn).Value2
+    Next formulaColumn
+
+    previousNodeLastRow = FindLastRowAcrossColumns( _
+        outputSheet, 19, 33, ASLAID_NODE_FIRST_ROW)
+    clearNodeLastRow = previousNodeLastRow
+    If nodeLastRow > clearNodeLastRow Then clearNodeLastRow = nodeLastRow
+    If clearNodeLastRow >= ASLAID_NODE_FIRST_ROW Then
+        outputSheet.Range("S" & CStr(ASLAID_NODE_FIRST_ROW) & _
+                          ":AG" & CStr(clearNodeLastRow)).ClearContents
+    End If
+
+    sourceSheet.Range("G1:J" & CStr(maximumNodeRow)).Calculate
+    CopyRangeValuesAndFormats _
+        sourceSheet.Range("G1:J" & CStr(maximumNodeRow)), _
+        outputSheet.Range("S" & CStr(ASLAID_NODE_FIRST_ROW) & _
+                          ":V" & CStr(nodeLastRow))
+
+    outputSheet.Range("W" & CStr(ASLAID_NODE_FIRST_ROW) & _
+                      ":AG" & CStr(ASLAID_NODE_FIRST_ROW)).Copy
+    outputSheet.Range("W" & CStr(ASLAID_NODE_FIRST_ROW) & _
+                      ":AG" & CStr(nodeLastRow)).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+
+    For formulaColumn = 23 To 33  ' W:AG
+        seedItem = seedFormulaOrValue(formulaColumn)
+        If VarType(seedItem) = vbString And _
+           Left$(CStr(seedItem), 1) = "=" Then
+            outputSheet.Range( _
+                outputSheet.Cells(ASLAID_NODE_FIRST_ROW, formulaColumn), _
+                outputSheet.Cells(nodeLastRow, formulaColumn)).FormulaR1C1 = _
+                    CStr(seedItem)
+        Else
+            seedValue = seedValues(formulaColumn)
+            If Not IsError(seedValue) Then
+                If Not IsNull(seedValue) Then
+                    If Len(CStr(seedValue)) > 0 Then
+                        outputSheet.Range( _
+                            outputSheet.Cells(ASLAID_NODE_FIRST_ROW, formulaColumn), _
+                            outputSheet.Cells(nodeLastRow, formulaColumn)).Value2 = _
+                                seedValue
+                    End If
+                End If
+            End If
+        End If
+    Next formulaColumn
+    outputSheet.Range("S" & CStr(ASLAID_NODE_FIRST_ROW) & _
+                      ":AG" & CStr(nodeLastRow)).Calculate
+
+    sourceAuxLastRow = FindLastRowAcrossColumns(sourceSheet, 12, 19, 1)
+    If sourceAuxLastRow < 1 Then
+        Err.Raise vbObjectError + 2035, , _
+            "ARENA_MOD_PLWithDBM2-10 L:S does not contain data to copy."
+    End If
+    auxLastRow = ASLAID_AUX_FIRST_ROW + sourceAuxLastRow - 1
+    previousAuxLastRow = FindLastRowAcrossColumns( _
+        outputSheet, 48, 55, ASLAID_AUX_FIRST_ROW)
+    clearAuxLastRow = previousAuxLastRow
+    If auxLastRow > clearAuxLastRow Then clearAuxLastRow = auxLastRow
+    If clearAuxLastRow >= ASLAID_AUX_FIRST_ROW Then
+        outputSheet.Range("AV" & CStr(ASLAID_AUX_FIRST_ROW) & _
+                          ":BC" & CStr(clearAuxLastRow)).ClearContents
+    End If
+
+    sourceSheet.Range("L1:S" & CStr(sourceAuxLastRow)).Calculate
+    CopyRangeValuesAndFormats _
+        sourceSheet.Range("L1:S" & CStr(sourceAuxLastRow)), _
+        outputSheet.Range("AV" & CStr(ASLAID_AUX_FIRST_ROW) & _
+                          ":BC" & CStr(auxLastRow))
+
+    ' A:I contains nine fields; BB is the intentional blank spacer in the
+    ' ten-column AY:BH curve block.
+    sourceSheet.Range("A73:I75").Calculate
+    outputSheet.Range("AY13:BH15").ClearContents
+    CopyRangeValuesAndFormats sourceSheet.Range("A73:C75"), _
+                              outputSheet.Range("AY13:BA15")
+    CopyRangeValuesAndFormats sourceSheet.Range("D73:I75"), _
+                              outputSheet.Range("BC13:BH15")
+End Sub
+
+Private Function FindMaximumNodeRowInColumnA( _
+                 ByVal sourceSheet As Worksheet) As Long
+    Dim rowNumber As Long
+    Dim nodeNumber As Double
+    Dim maximumNodeNumber As Double
+    Dim foundNode As Boolean
+
+    For rowNumber = 1 To CURVE_FIRST_ROW - 1
+        If HasNumericValue(sourceSheet.Cells(rowNumber, 1)) Then
+            nodeNumber = CDbl(sourceSheet.Cells(rowNumber, 1).Value2)
+            If Not foundNode Or nodeNumber > maximumNodeNumber Then
+                maximumNodeNumber = nodeNumber
+                FindMaximumNodeRowInColumnA = rowNumber
+                foundNode = True
+            End If
+        End If
+    Next rowNumber
+End Function
+
+Private Function FindLastRowAcrossColumns( _
+                 ByVal targetSheet As Worksheet, _
+                 ByVal firstColumn As Long, _
+                 ByVal lastColumn As Long, _
+                 ByVal minimumRow As Long) As Long
+    Dim columnNumber As Long
+    Dim candidateRow As Long
+
+    For columnNumber = firstColumn To lastColumn
+        candidateRow = targetSheet.Cells(targetSheet.Rows.Count, _
+                                          columnNumber).End(xlUp).Row
+        If candidateRow >= minimumRow Then
+            If candidateRow > FindLastRowAcrossColumns Then
+                FindLastRowAcrossColumns = candidateRow
+            End If
+        End If
+    Next columnNumber
+
+    If FindLastRowAcrossColumns < minimumRow Then
+        FindLastRowAcrossColumns = minimumRow - 1
+    End If
+End Function
+
+Private Sub CopyRangeValuesAndFormats(ByVal sourceRange As Range, _
+                                      ByVal destinationRange As Range)
+    sourceRange.Copy
+    destinationRange.PasteSpecial Paste:=xlPasteValuesAndNumberFormats
+    destinationRange.PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+End Sub
+
 Private Function FindLastSheet10Row(ByVal outputSheet As Worksheet) As Long
     Dim columnNumber As Long
     Dim candidateRow As Long
@@ -919,17 +1649,6 @@ End Sub
 Private Sub ExportTensionAdjustmentTextFile( _
             ByVal outputSheet As Worksheet, _
             ByVal sheet10LastRow As Long)
-    Dim rawNodes As Variant
-    Dim rawSeparators As Variant
-    Dim rawLoads As Variant
-    Dim outputLines() As String
-    Dim dataRowCount As Long
-    Dim itemIndex As Long
-    Dim nodeValue As Variant
-    Dim separatorValue As Variant
-    Dim loadValue As Variant
-    Dim loadText As String
-    Dim decimalSeparator As String
     Dim headerText As String
     Dim existingText As String
     Dim specialPrefix As String
@@ -962,6 +1681,45 @@ Private Sub ExportTensionAdjustmentTextFile( _
     specialValueText = CStr(CLng(Application.WorksheetFunction.Round( _
         -Abs(CDbl(specialCellValue)), 0)))
 
+    WriteTensionAdjustmentTextFile _
+        outputSheet, sheet10LastRow, headerText, _
+        specialPrefix & specialValueText
+End Sub
+
+Private Sub ExportTensionAdjustmentTextFileKeepingFirstTwoLines( _
+            ByVal outputSheet As Worksheet, _
+            ByVal sheet10LastRow As Long)
+    Dim outputPath As String
+    Dim existingText As String
+    Dim firstLine As String
+    Dim secondLine As String
+
+    outputPath = WorkbookFolderFilePath(TENSION_ADJUSTMENT_TEXT_FILE_NAME)
+    existingText = ReadEntireTextFile(outputPath)
+    GetPreservedTensionFirstTwoLines existingText, firstLine, secondLine
+
+    WriteTensionAdjustmentTextFile _
+        outputSheet, sheet10LastRow, firstLine, secondLine
+End Sub
+
+Private Sub WriteTensionAdjustmentTextFile( _
+            ByVal outputSheet As Worksheet, _
+            ByVal sheet10LastRow As Long, _
+            ByVal firstLine As String, _
+            ByVal secondLine As String)
+    Dim rawNodes As Variant
+    Dim rawSeparators As Variant
+    Dim rawLoads As Variant
+    Dim outputLines() As String
+    Dim dataRowCount As Long
+    Dim itemIndex As Long
+    Dim nodeValue As Variant
+    Dim separatorValue As Variant
+    Dim loadValue As Variant
+    Dim loadText As String
+    Dim decimalSeparator As String
+    Dim outputPath As String
+
     If sheet10LastRow >= 10 Then
         dataRowCount = sheet10LastRow - 9
         rawNodes = outputSheet.Range("M10:M" & CStr(sheet10LastRow)).Value2
@@ -972,8 +1730,8 @@ Private Sub ExportTensionAdjustmentTextFile( _
     End If
 
     ReDim outputLines(0 To dataRowCount + 1)
-    outputLines(0) = headerText
-    outputLines(1) = specialPrefix & specialValueText
+    outputLines(0) = firstLine
+    outputLines(1) = secondLine
     decimalSeparator = Application.International(xlDecimalSeparator)
 
     For itemIndex = 1 To dataRowCount
@@ -1024,8 +1782,26 @@ Private Sub ExportTensionAdjustmentTextFile( _
             CStr(separatorValue) & vbTab & loadText
     Next itemIndex
 
-    WriteEntireTextFileSafely outputPath, _
-                              Join(outputLines, vbCrLf)
+    outputPath = WorkbookFolderFilePath(TENSION_ADJUSTMENT_TEXT_FILE_NAME)
+    WriteEntireTextFileSafely outputPath, Join(outputLines, vbCrLf)
+End Sub
+
+Private Sub GetPreservedTensionFirstTwoLines( _
+            ByVal existingText As String, _
+            ByRef firstLine As String, _
+            ByRef secondLine As String)
+    Dim existingLines As Variant
+
+    firstLine = "***CLOAD, OP=NEW, FOLLOWER"
+    secondLine = "1,        1,   -168568"
+
+    If Len(existingText) = 0 Then Exit Sub
+
+    existingLines = Split(NormalizeLineBreaks(existingText), vbCrLf)
+    If UBound(existingLines) < 1 Then Exit Sub
+
+    firstLine = CStr(existingLines(0))
+    secondLine = CStr(existingLines(1))
 End Sub
 
 Private Function WorkbookFolderFilePath(ByVal fileName As String) As String
