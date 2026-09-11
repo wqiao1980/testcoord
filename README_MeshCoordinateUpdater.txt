@@ -124,6 +124,14 @@ How it works
     8,000,000 for the upstream structure node and 9,000,000 for the downstream
     structure node.
 
+    How to identify an intermediate structure on this sheet:
+    - A node number in O14 means an intermediate structure has been defined.
+    - A blank O14 means no intermediate structure is currently defined.
+    - After button 8 runs successfully, O21:S22 shows the two generated rows:
+      one upstream extension node and one downstream extension node.
+    - With the default additions, the generated node numbers equal the selected
+      route node plus 8,000,000 and plus 9,000,000, respectively.
+
 14. Workflow Controls buttons:
     - Run All Workflows
     - 1. Rebuild Coordinates Only
