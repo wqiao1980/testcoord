@@ -21,8 +21,10 @@ Private Const ASLAID_CURVE_FIRST_ROW As Long = 13
 Private Const ASLAID_SHEET10_SOURCE_FIRST_ROW As Long = 23
 Private Const MODSTRUCTURE_ROUTE_LAST_ROW As Long = 72
 Private Const MODSTRUCTURE_NODE_INCREMENT As Long = 7000000
-Private Const MODSTRUCTURE_UPSTREAM_INCREMENT As Long = 8000000
-Private Const MODSTRUCTURE_DOWNSTREAM_INCREMENT As Long = 9000000
+Private Const MODSTRUCTURE_UPSTREAM_INCREMENT As Long = 7000001
+Private Const MODSTRUCTURE_DOWNSTREAM_INCREMENT As Long = 7000002
+Private Const MODSTRUCTURE_LEFT_INCREMENT As Long = 7000003
+Private Const MODSTRUCTURE_RIGHT_INCREMENT As Long = 7000004
 Private Const SPRING_TEXT_FILE_NAME As String = _
     "BPTiber_With_BM_FL6_TestBase_05_Lateral_Springs.txt"
 Private Const INITIAL_DISPLACEMENT_TEXT_FILE_NAME As String = _
@@ -236,8 +238,8 @@ Private Sub RunModStructureWorkflowCore( _
     If BuildIntermediate Then
         BuildIntermediateStructure sourceSheet, structureSheet
         completionText = _
-            "ModStructure endpoints and the two intermediate structure " & _
-            "extension nodes were updated."
+            "ModStructure endpoints and four intermediate structure nodes " & _
+            "(upstream, downstream, lateral left and lateral right) were updated."
     Else
         completionText = _
             "ModStructure route data and the two endpoint extension nodes " & _
@@ -258,6 +260,11 @@ CleanFail:
     failureNumber = Err.Number
     failureDescription = Err.Description
     failureSource = Err.Source
+    If BuildIntermediate Then
+        If Not structureSheet Is Nothing Then
+            structureSheet.Range("O21:S24").ClearContents
+        End If
+    End If
     Application.EnableEvents = oldEnableEvents
     Application.ScreenUpdating = oldScreenUpdating
     MeshCoordinateUpdateIsRunning = False
@@ -440,8 +447,12 @@ Private Sub BuildIntermediateStructure( _
     Dim upstreamLength As Double
     Dim downstreamLength As Double
     Dim selectedZ As Double
-    Dim upstreamIncrement As Long
-    Dim downstreamIncrement As Long
+    Dim upstreamDX As Double, upstreamDY As Double
+    Dim downstreamDX As Double, downstreamDY As Double
+    Dim additions(1 To 4) As Long
+    Dim resultNode As Double
+    Dim index As Long, otherIndex As Long
+    Dim generatedLastRow As Long
 
     If IsError(structureSheet.Range("O14").Value2) Or _
        Not IsNumeric(structureSheet.Range("O14").Value2) Then
@@ -449,6 +460,9 @@ Private Sub BuildIntermediateStructure( _
             "Enter an intermediate route node number in ModStructure cell O14."
     End If
     selectedNode = CLng(structureSheet.Range("O14").Value2)
+    If selectedNode <= 0 Or CDbl(structureSheet.Range("O14").Value2) <> selectedNode Then
+        Err.Raise vbObjectError + 2042, , "The intermediate route node must be a positive whole number."
+    End If
 
     routeLastRow = FindLastModStructureRouteRow(structureSheet)
     For rowNumber = 1 To routeLastRow
@@ -490,53 +504,115 @@ Private Sub BuildIntermediateStructure( _
             "An adjacent intermediate route segment has zero plan length."
     End If
 
-    If Not IsNumeric(structureSheet.Range("O17").Value2) Then
-        structureSheet.Range("O17").Value2 = MODSTRUCTURE_UPSTREAM_INCREMENT
+    upstreamDX = (CDbl(structureSheet.Cells(selectedRow, 3).Value2) - _
+                  CDbl(structureSheet.Cells(selectedRow - 1, 3).Value2)) / upstreamLength
+    upstreamDY = (CDbl(structureSheet.Cells(selectedRow, 4).Value2) - _
+                  CDbl(structureSheet.Cells(selectedRow - 1, 4).Value2)) / upstreamLength
+    downstreamDX = (CDbl(structureSheet.Cells(selectedRow + 1, 3).Value2) - _
+                    CDbl(structureSheet.Cells(selectedRow, 3).Value2)) / downstreamLength
+    downstreamDY = (CDbl(structureSheet.Cells(selectedRow + 1, 4).Value2) - _
+                    CDbl(structureSheet.Cells(selectedRow, 4).Value2)) / downstreamLength
+    ' Allow coordinate-rounding noise, but reject a bend or reversed route.
+    If Abs(upstreamDX * downstreamDY - upstreamDY * downstreamDX) > 0.0001 Or _
+       upstreamDX * downstreamDX + upstreamDY * downstreamDY <= 0 Then
+        Err.Raise vbObjectError + 2043, , _
+            "Choose an intermediate node on a straight section, not a bend."
     End If
-    If Not IsNumeric(structureSheet.Range("O18").Value2) Then
-        structureSheet.Range("O18").Value2 = MODSTRUCTURE_DOWNSTREAM_INCREMENT
+    For rowNumber = CURVE_FIRST_ROW To CURVE_FIRST_ROW + 2
+        If HasNumericValue(sourceSheet.Cells(rowNumber, 1)) And _
+           HasNumericValue(sourceSheet.Cells(rowNumber, 2)) Then
+            If selectedNode >= CDbl(sourceSheet.Cells(rowNumber, 1).Value2) And _
+               selectedNode <= CDbl(sourceSheet.Cells(rowNumber, 2).Value2) Then
+                Err.Raise vbObjectError + 2043, , _
+                    "The selected node is in a defined curve. Choose a straight-section node."
+            End If
+        End If
+    Next rowNumber
+
+    If IsEmpty(structureSheet.Range("O26").Value2) Then
+        structureSheet.Range("O26").Formula = "=$O$15"
     End If
-    upstreamIncrement = CLng(structureSheet.Range("O17").Value2)
-    downstreamIncrement = CLng(structureSheet.Range("O18").Value2)
-    If upstreamIncrement = downstreamIncrement Then
-        Err.Raise vbObjectError + 2041, , _
-            "The upstream and downstream node-number additions must differ."
+    structureSheet.Range("O15:O16").Calculate
+    structureSheet.Range("O26").Calculate
+    If Not HasNumericValue(structureSheet.Range("O15")) Or _
+       Not HasNumericValue(structureSheet.Range("O26")) Or _
+       Not HasNumericValue(structureSheet.Range("O16")) Then
+        Err.Raise vbObjectError + 2044, , "Axial/lateral distances and height must be numeric."
     End If
+    If CDbl(structureSheet.Range("O15").Value2) <= 0 Or _
+       CDbl(structureSheet.Range("O26").Value2) <= 0 Then
+        Err.Raise vbObjectError + 2044, , "Axial and lateral distances must be greater than zero."
+    End If
+    additions(1) = ReadStructureAddition(structureSheet, "O17", selectedNode, MODSTRUCTURE_UPSTREAM_INCREMENT)
+    additions(2) = ReadStructureAddition(structureSheet, "O18", selectedNode, MODSTRUCTURE_DOWNSTREAM_INCREMENT)
+    additions(3) = ReadStructureAddition(structureSheet, "O27", selectedNode, MODSTRUCTURE_LEFT_INCREMENT)
+    additions(4) = ReadStructureAddition(structureSheet, "O28", selectedNode, MODSTRUCTURE_RIGHT_INCREMENT)
+    generatedLastRow = FindLastOutputRow(sourceSheet)
+    For index = 1 To 4
+        For otherIndex = 1 To index - 1
+            If additions(index) = additions(otherIndex) Then
+                Err.Raise vbObjectError + 2041, , "All four node-number additions must differ."
+            End If
+        Next otherIndex
+        resultNode = CDbl(selectedNode) + additions(index)
+        If Application.CountIf(structureSheet.Range("B1:B" & CStr(routeLastRow)), resultNode) > 0 Or _
+           resultNode = structureSheet.Range("H2").Value2 Or _
+           resultNode = structureSheet.Range("H5").Value2 Then
+            Err.Raise vbObjectError + 2045, , "A new node ID duplicates a route or endpoint structure node."
+        End If
+        If generatedLastRow >= DEFAULT_OUTPUT_FIRST_ROW Then
+            If Application.CountIf(sourceSheet.Range("Z" & CStr(DEFAULT_OUTPUT_FIRST_ROW) & _
+                                   ":Z" & CStr(generatedLastRow)), resultNode) > 0 Then
+                Err.Raise vbObjectError + 2045, , "A new node ID duplicates a generated mesh node."
+            End If
+        End If
+    Next index
 
     selectedZ = FindRouteZForNode(sourceSheet, selectedNode)
     structureSheet.Range("O19").Value2 = selectedZ
 
     WriteIntermediateStructureFormulas structureSheet, selectedRow
-    structureSheet.Range("O21:O22").NumberFormat = "0"
-    structureSheet.Range("P21:R22").NumberFormat = "0.000"
+    structureSheet.Range("O21:O24").NumberFormat = "0"
+    structureSheet.Range("P21:R24").NumberFormat = "0.000"
     structureSheet.Calculate
 End Sub
+
+Private Function ReadStructureAddition(ByVal ws As Worksheet, ByVal address As String, _
+             ByVal node As Long, ByVal defaultAddition As Long) As Long
+    Dim value As Double
+    If IsEmpty(ws.Range(address).Value2) Then ws.Range(address).Value2 = defaultAddition
+    If Not HasNumericValue(ws.Range(address)) Then
+        Err.Raise vbObjectError + 2041, , _
+            "Enter a positive whole-number node addition in " & address & "."
+    End If
+    value = CDbl(ws.Range(address).Value2)
+    If value <= 0 Or value <> Fix(value) Or value > 2147483647# - CDbl(node) Then
+        Err.Raise vbObjectError + 2041, , _
+            "Invalid node addition in " & address & ". Use a positive integer within the node ID limit."
+    End If
+    ReadStructureAddition = CLng(value)
+End Function
 
 Private Sub WriteIntermediateStructureFormulas( _
             ByVal structureSheet As Worksheet, _
             ByVal selectedRow As Long)
     Dim previousRow As Long
     Dim nextRow As Long
-    Dim upstreamLengthFormula As String
-    Dim downstreamLengthFormula As String
+    Dim axialLengthFormula As String
+    Dim dxFormula As String, dyFormula As String
 
     previousRow = selectedRow - 1
     nextRow = selectedRow + 1
-    upstreamLengthFormula = _
-        "SQRT((C" & CStr(selectedRow) & "-C" & CStr(previousRow) & ")^2+" & _
-        "(D" & CStr(selectedRow) & "-D" & CStr(previousRow) & ")^2)"
-    downstreamLengthFormula = _
-        "SQRT((C" & CStr(nextRow) & "-C" & CStr(selectedRow) & ")^2+" & _
-        "(D" & CStr(nextRow) & "-D" & CStr(selectedRow) & ")^2)"
+    dxFormula = "(C" & CStr(nextRow) & "-C" & CStr(previousRow) & ")"
+    dyFormula = "(D" & CStr(nextRow) & "-D" & CStr(previousRow) & ")"
+    axialLengthFormula = "SQRT(" & dxFormula & "^2+" & dyFormula & "^2)"
 
     structureSheet.Range("O21").Formula = _
         "=B" & CStr(selectedRow) & "+$O$17"
     structureSheet.Range("P21").Formula = _
-        "=C" & CStr(selectedRow) & "-$O$15*(C" & CStr(selectedRow) & _
-        "-C" & CStr(previousRow) & ")/" & upstreamLengthFormula
+        "=C" & CStr(selectedRow) & "-$O$15*" & dxFormula & "/" & axialLengthFormula
     structureSheet.Range("Q21").Formula = _
-        "=D" & CStr(selectedRow) & "-$O$15*(D" & CStr(selectedRow) & _
-        "-D" & CStr(previousRow) & ")/" & upstreamLengthFormula
+        "=D" & CStr(selectedRow) & "-$O$15*" & dyFormula & "/" & axialLengthFormula
     structureSheet.Range("R21").Formula = "=$O$19+$O$16"
     structureSheet.Range("S21").Formula = _
         "=O21&"",""&P21&"",""&Q21&"",""&R21"
@@ -544,14 +620,28 @@ Private Sub WriteIntermediateStructureFormulas( _
     structureSheet.Range("O22").Formula = _
         "=B" & CStr(selectedRow) & "+$O$18"
     structureSheet.Range("P22").Formula = _
-        "=C" & CStr(selectedRow) & "+$O$15*(C" & CStr(nextRow) & _
-        "-C" & CStr(selectedRow) & ")/" & downstreamLengthFormula
+        "=C" & CStr(selectedRow) & "+$O$15*" & dxFormula & "/" & axialLengthFormula
     structureSheet.Range("Q22").Formula = _
-        "=D" & CStr(selectedRow) & "+$O$15*(D" & CStr(nextRow) & _
-        "-D" & CStr(selectedRow) & ")/" & downstreamLengthFormula
+        "=D" & CStr(selectedRow) & "+$O$15*" & dyFormula & "/" & axialLengthFormula
     structureSheet.Range("R22").Formula = "=$O$19+$O$16"
     structureSheet.Range("S22").Formula = _
         "=O22&"",""&P22&"",""&Q22&"",""&R22"
+
+    ' Rotate the downstream unit vector by +90 degrees (left) and -90 (right).
+    structureSheet.Range("O23").Formula = "=B" & CStr(selectedRow) & "+$O$27"
+    structureSheet.Range("P23").Formula = _
+        "=C" & CStr(selectedRow) & "-$O$26*" & dyFormula & "/" & axialLengthFormula
+    structureSheet.Range("Q23").Formula = _
+        "=D" & CStr(selectedRow) & "+$O$26*" & dxFormula & "/" & axialLengthFormula
+    structureSheet.Range("R23").Formula = "=$O$19+$O$16"
+    structureSheet.Range("S23").Formula = "=O23&"",""&P23&"",""&Q23&"",""&R23"
+    structureSheet.Range("O24").Formula = "=B" & CStr(selectedRow) & "+$O$28"
+    structureSheet.Range("P24").Formula = _
+        "=C" & CStr(selectedRow) & "+$O$26*" & dyFormula & "/" & axialLengthFormula
+    structureSheet.Range("Q24").Formula = _
+        "=D" & CStr(selectedRow) & "-$O$26*" & dxFormula & "/" & axialLengthFormula
+    structureSheet.Range("R24").Formula = "=$O$19+$O$16"
+    structureSheet.Range("S24").Formula = "=O24&"",""&P24&"",""&Q24&"",""&R24"
 End Sub
 
 Private Function FindRouteZForNode( _
@@ -1485,6 +1575,11 @@ Private Sub UpdateAsLaidSheet(ByVal sourceSheet As Worksheet)
                               formulaColumn).Value2
     Next formulaColumn
 
+    ' AG uses the original T/U coordinates for curve nodes (including endpoints).
+    ' Straight nodes retain the AA/AB correction. S is the node ID; W is its
+    ' existing output index. Blank curve definitions must not match node zero.
+    seedFormulaOrValue(33) = AsLaidCoordinateTextFormula()
+
     previousNodeLastRow = FindLastRowAcrossColumns( _
         outputSheet, 19, 33, ASLAID_NODE_FIRST_ROW)
     clearNodeLastRow = previousNodeLastRow
@@ -1560,7 +1655,19 @@ Private Sub UpdateAsLaidSheet(ByVal sourceSheet As Worksheet)
                               outputSheet.Range("AY13:BA15")
     CopyRangeValuesAndFormats sourceSheet.Range("D73:I75"), _
                               outputSheet.Range("BC13:BH15")
+    outputSheet.Range("AG" & CStr(ASLAID_NODE_FIRST_ROW) & _
+                      ":AG" & CStr(nodeLastRow)).Calculate
 End Sub
+
+Private Function AsLaidCoordinateTextFormula() As String
+    Dim curveTest As String
+    curveTest = "COUNTIFS(R13C51:R15C51,""<=""&RC19," & _
+                "R13C52:R15C52,"">=""&RC19," & _
+                "R13C51:R15C51,""<>"",R13C52:R15C52,""<>"")>0"
+    AsLaidCoordinateTextFormula = "=RC23&"",""&ROUND(IF(" & _
+        curveTest & ",RC20,RC27),5)&"",""&ROUND(IF(" & _
+        curveTest & ",RC21,RC28),5)&"",""&RC22"
+End Function
 
 Private Function FindMaximumNodeRowInColumnA( _
                  ByVal sourceSheet As Worksheet) As Long

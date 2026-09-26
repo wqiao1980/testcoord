@@ -110,27 +110,45 @@ How it works
     row when the route has fewer nodes.
 
 13. The intermediate-structure workflow uses the input block in
-    ModStructure!N13:S22. Enter an exact existing route node in O14, then click
+    ModStructure!N13:S28. Enter an exact existing route node in O14, then click
     the intermediate-structure button. The selected node must have both a
     preceding and a following route node, so it cannot be the first or last
-    route node. The workflow:
+    route node. It must be on a straight section, not a bend or a defined curve.
+    The workflow:
     - projects one point upstream and one point downstream by the distance in
       O15, which references G1 and defaults to 100 m;
     - looks up the selected route node's Z coordinate from the generated route
       output first, with the mesh input tables as a fallback;
-    - adds the height in O16, which references N1 and defaults to 0.75 m; and
-    - writes the two result rows to O21:S22.
-    O17 and O18 are editable node-number additions. Their defaults are
-    8,000,000 for the upstream structure node and 9,000,000 for the downstream
-    structure node.
+    - adds two lateral nodes on opposite sides of the selected node, at the
+      distance in O26 (initially linked to O15, but independently editable);
+    - adds the height in O16, which references N1 and defaults to 0.75 m, to
+      the selected Z for all four nodes; and
+    - writes upstream/downstream to O21:S22 and lateral left/right to O23:S24.
+    Left/right is viewed looking downstream. The common planar pipeline axis
+    is the vector from the preceding route node to the following route node.
+    Lateral offsets rotate that unit vector by +90 and -90 degrees. This works
+    for horizontal, vertical and diagonal routes without dividing by slope.
+    Distances and perpendicularity are in the X/Y plane, not along seabed slope.
+
+    O17/O18 are editable upstream/downstream node-number additions. O27/O28
+    are editable lateral left/right additions. Any positive integer additions
+    are accepted if the resulting IDs are valid and unique. Blank inputs use
+    7000001, 7000002, 7000003 and 7000004 respectively. Existing O17/O18 inputs
+    are retained; neither an 8000000 nor a 9000000 prefix is required.
+    New node ID = selected route node + the corresponding addition.
+    Example: route node 1071 with additions 7000001 through 7000004 generates
+    7001072, 7001073, 7001074 and 7001075. These fields are additions, not final IDs.
+    Duplicate additions and collisions with route/generated-mesh/endpoint IDs
+    are rejected. Distances must be positive. A bent/reversed route is rejected
+    (normalized cross-product tolerance 0.0001 allows coordinate rounding).
+    On a failed workflow 8 run, O21:S24 is cleared so old results are not current.
 
     How to identify an intermediate structure on this sheet:
     - A node number in O14 means an intermediate structure has been defined.
     - A blank O14 means no intermediate structure is currently defined.
-    - After button 8 runs successfully, O21:S22 shows the two generated rows:
-      one upstream extension node and one downstream extension node.
-    - With the default additions, the generated node numbers equal the selected
-      route node plus 8,000,000 and plus 9,000,000, respectively.
+    - After button 8 runs successfully, O21:S24 shows all four generated rows.
+    - Column S contains the four corresponding comma-separated output lines.
+    - Rerun button 8 after changing the selected route node or numbering inputs.
 
 14. Workflow Controls buttons:
     - Run All Workflows
